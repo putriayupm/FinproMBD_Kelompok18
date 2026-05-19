@@ -6,10 +6,22 @@
 .equ THRESHOLD_DRY, 40
 .equ THRESHOLD_WET, 61
 
+.equ LCD_ADDR_W, 0x4E
+.equ LCD_BL,    0x08
+.equ LCD_EN,    0x04
+.equ LCD_RS,    0x01
+
 str_header:
     .byte '=','=','=',' ','F','E','R','T','I','L','I','Z','E','R'
     .byte ' ','S','C','H','E','D','U','L','E','R',' ','=','=','='
     .byte 0x0A, 0x0D, 0x00
+
+str_lcd_init_ok:
+    .byte '[','L','C','D',' ','O','K',']', 0x0A,0x0D, 0x00
+str_lcd_init_fail:
+    .byte '[','L','C','D',' ','F','A','I','L',']', 0x0A,0x0D, 0x00
+str_boot:
+    .byte '[','B','O','O','T',']', 0x0A,0x0D, 0x00
 
 str_humidity:
     .byte 'H','u','m','i','d','i','t','y',':',' ', 0x00
@@ -52,11 +64,41 @@ str_off:
 str_persen:
     .byte '%',0x0A,0x0D, 0x00
 
+str_lcd_hum:
+    .byte 'H','u','m','i','d','i','t','y',':', 0x00
+str_lcd_optimal:
+    .byte 'S','t',':','O','P','T','I','M','A','L', 0x00
+str_lcd_dry:
+    .byte 'S','t',':','D','R','Y',' ','S','I','R','A','M', 0x00
+str_lcd_wet:
+    .byte 'S','t',':','W','E','T',' ','T','U','N','G','G','U', 0x00
+str_lcd_off:
+    .byte 'S','E','N','S','O','R',' ','O','F','F', 0x00
+str_lcd_ready:
+    .byte 'F','e','r','t','i','l','i','z','e','r',' ','R','d','y', 0x00
+str_lcd_press:
+    .byte 'T','e','k','a','n',' ','t','o','m','b','o','l', 0x00
+
 main:
     LDI R16, hi8(RAMEND)
     OUT SPH, R16
     LDI R16, lo8(RAMEND)
     OUT SPL, R16
+
+    ; --- UART init DULU supaya bisa debug ---
+    CLR R16
+    STS UCSR0A, R16
+    STS UBRR0H, R16
+    LDI R16, 103
+    STS UBRR0L, R16
+    LDI R16, (1<<RXEN0)|(1<<TXEN0)
+    STS UCSR0B, R16
+    LDI R16, (1<<UCSZ00)|(1<<UCSZ01)
+    STS UCSR0C, R16
+
+    LDI ZL, lo8(str_boot)
+    LDI ZH, hi8(str_boot)
+    RCALL print_string
 
     SBI DDRD, 4
     SBI DDRD, 5
@@ -77,23 +119,42 @@ main:
     LDI R16, (1<<SPE)|(1<<MSTR)|(1<<SPR0)
     OUT SPCR, R16
 
-    CLR R16
-    STS UCSR0A, R16
-    STS UBRR0H, R16
-    LDI R16, 103
-    STS UBRR0L, R16
-    LDI R16, (1<<RXEN0)|(1<<TXEN0)
-    STS UCSR0B, R16
-    LDI R16, (1<<UCSZ00)|(1<<UCSZ01)
-    STS UCSR0C, R16
+    RCALL TWI_INIT
+    RCALL LCD_INIT
+    TST R0
+    BRNE lcd_failed
+    LDI ZL, lo8(str_lcd_init_ok)
+    LDI ZH, hi8(str_lcd_init_ok)
+    RCALL print_string
+    RJMP lcd_done
+lcd_failed:
+    LDI ZL, lo8(str_lcd_init_fail)
+    LDI ZH, hi8(str_lcd_init_fail)
+    RCALL print_string
+lcd_done:
 
     CLR R17
     CLR R18
-    CLR R23           ; R23 = flag toggle (0=OFF, 1=ON)
+    CLR R23
 
     LDI ZL, lo8(str_header)
     LDI ZH, hi8(str_header)
     RCALL print_string
+
+    TST R0
+    BRNE skip_lcd_start
+    RCALL LCD_CLEAR
+    LDI R16, 0x80
+    RCALL LCD_CMD
+    LDI ZL, lo8(str_lcd_ready)
+    LDI ZH, hi8(str_lcd_ready)
+    RCALL LCD_PRINT_STR
+    LDI R16, 0xC0
+    RCALL LCD_CMD
+    LDI ZL, lo8(str_lcd_press)
+    LDI ZH, hi8(str_lcd_press)
+    RCALL LCD_PRINT_STR
+skip_lcd_start:
 
 run:
     RCALL check_button
@@ -102,6 +163,7 @@ run:
     RCALL SPI_RECEIVE
     RCALL print_humidity
     RCALL CHECK_CONDITION
+    RCALL LCD_UPDATE
     RCALL delay_500ms
     RJMP run
 
@@ -133,6 +195,17 @@ btn_turn_off:
     LDI ZL, lo8(str_off)
     LDI ZH, hi8(str_off)
     RCALL print_string
+    RCALL LCD_CLEAR
+    LDI R16, 0x80
+    RCALL LCD_CMD
+    LDI ZL, lo8(str_lcd_off)
+    LDI ZH, hi8(str_lcd_off)
+    RCALL LCD_PRINT_STR
+    LDI R16, 0xC0
+    RCALL LCD_CMD
+    LDI ZL, lo8(str_lcd_press)
+    LDI ZH, hi8(str_lcd_press)
+    RCALL LCD_PRINT_STR
     RET
 btn_turn_on:
     LDI R23, 1
@@ -268,7 +341,6 @@ ph_optimal:
 
 ph_print_status:
     RCALL print_string
-
     LDI ZL, lo8(str_separator)
     LDI ZH, hi8(str_separator)
     RCALL print_string
@@ -277,6 +349,372 @@ ph_print_status:
     POP R21
     POP R20
     POP R16
+    RET
+
+; =====================================================
+; ===========   LCD I2C dengan TIMEOUT   ==============
+; =====================================================
+; R0 = flag global (0=OK, 1=GAGAL)
+
+TWI_INIT:
+    PUSH R16
+    LDI R16, 72
+    STS TWBR, R16
+    LDI R16, 0x00
+    STS TWSR, R16
+    CLR R0
+    POP R16
+    RET
+
+TWI_START:
+    PUSH R16
+    PUSH R17
+    PUSH R18
+    LDI R16, (1<<TWINT)|(1<<TWSTA)|(1<<TWEN)
+    STS TWCR, R16
+    LDI R17, 0xFF
+    LDI R18, 0xFF
+ts_wait:
+    LDS R16, TWCR
+    SBRC R16, TWINT
+    RJMP ts_ok
+    DEC R18
+    BRNE ts_wait
+    DEC R17
+    BRNE ts_wait
+    LDI R16, 1
+    MOV R0, R16
+ts_ok:
+    POP R18
+    POP R17
+    POP R16
+    RET
+
+TWI_STOP:
+    PUSH R16
+    LDI R16, (1<<TWINT)|(1<<TWSTO)|(1<<TWEN)
+    STS TWCR, R16
+    POP R16
+    RET
+
+TWI_WRITE:
+    PUSH R17
+    PUSH R18
+    PUSH R19
+    STS TWDR, R16
+    LDI R17, (1<<TWINT)|(1<<TWEN)
+    STS TWCR, R17
+    LDI R18, 0xFF
+    LDI R19, 0xFF
+tw_wait:
+    LDS R17, TWCR
+    SBRC R17, TWINT
+    RJMP tw_ok
+    DEC R19
+    BRNE tw_wait
+    DEC R18
+    BRNE tw_wait
+    LDI R17, 1
+    MOV R0, R17
+tw_ok:
+    POP R19
+    POP R18
+    POP R17
+    RET
+
+PCF_WRITE:
+    PUSH R16
+    TST R0
+    BRNE pcf_done
+    RCALL TWI_START
+    TST R0
+    BRNE pcf_stop
+    LDI R16, LCD_ADDR_W
+    RCALL TWI_WRITE
+    TST R0
+    BRNE pcf_stop
+    MOV R16, R24
+    RCALL TWI_WRITE
+pcf_stop:
+    RCALL TWI_STOP
+pcf_done:
+    POP R16
+    RET
+
+LCD_SEND_NIBBLE:
+    PUSH R24
+    MOV R24, R25
+    ANDI R24, 0xF0
+    OR   R24, R26
+    ORI  R24, LCD_BL
+    ORI  R24, LCD_EN
+    RCALL PCF_WRITE
+    RCALL delay_short
+    MOV R24, R25
+    ANDI R24, 0xF0
+    OR   R24, R26
+    ORI  R24, LCD_BL
+    RCALL PCF_WRITE
+    RCALL delay_short
+    POP R24
+    RET
+
+LCD_SEND_BYTE:
+    PUSH R25
+    PUSH R16
+    MOV R25, R16
+    ANDI R25, 0xF0
+    RCALL LCD_SEND_NIBBLE
+    POP R16
+    PUSH R16
+    MOV R25, R16
+    SWAP R25
+    ANDI R25, 0xF0
+    RCALL LCD_SEND_NIBBLE
+    POP R16
+    POP R25
+    RET
+
+LCD_CMD:
+    PUSH R26
+    LDI R26, 0x00
+    RCALL LCD_SEND_BYTE
+    RCALL delay_2ms
+    POP R26
+    RET
+
+LCD_DATA:
+    PUSH R26
+    LDI R26, LCD_RS
+    RCALL LCD_SEND_BYTE
+    RCALL delay_short
+    POP R26
+    RET
+
+LCD_INIT:
+    PUSH R16
+    PUSH R24
+    PUSH R25
+    PUSH R26
+
+    CLR R0
+    RCALL delay_50ms
+
+    LDI R24, LCD_BL
+    RCALL PCF_WRITE
+    TST R0
+    BRNE li_done
+
+    LDI R26, 0x00
+    LDI R25, 0x30
+    RCALL LCD_SEND_NIBBLE
+    RCALL delay_5ms
+    LDI R25, 0x30
+    RCALL LCD_SEND_NIBBLE
+    RCALL delay_short
+    LDI R25, 0x30
+    RCALL LCD_SEND_NIBBLE
+    RCALL delay_short
+    LDI R25, 0x20
+    RCALL LCD_SEND_NIBBLE
+    RCALL delay_short
+
+    LDI R16, 0x28
+    RCALL LCD_CMD
+    LDI R16, 0x08
+    RCALL LCD_CMD
+    LDI R16, 0x01
+    RCALL LCD_CMD
+    RCALL delay_2ms
+    LDI R16, 0x06
+    RCALL LCD_CMD
+    LDI R16, 0x0C
+    RCALL LCD_CMD
+
+li_done:
+    POP R26
+    POP R25
+    POP R24
+    POP R16
+    RET
+
+LCD_CLEAR:
+    PUSH R16
+    TST R0
+    BRNE lc_done
+    LDI R16, 0x01
+    RCALL LCD_CMD
+    RCALL delay_2ms
+lc_done:
+    POP R16
+    RET
+
+LCD_PRINT_STR:
+    PUSH R16
+    TST R0
+    BRNE lps_done
+lps_loop:
+    LPM R16, Z+
+    TST R16
+    BREQ lps_done
+    RCALL LCD_DATA
+    RJMP lps_loop
+lps_done:
+    POP R16
+    RET
+
+LCD_PRINT_NUM:
+    PUSH R16
+    PUSH R20
+    PUSH R21
+    PUSH R24
+    TST R0
+    BRNE ln_done
+
+    MOV R20, R17
+    CLR R21
+    CLR R24
+ln_hundreds:
+    CPI R20, 100
+    BRLO ln_tens
+    SUBI R20, 100
+    INC R24
+    RJMP ln_hundreds
+ln_tens:
+    CPI R20, 10
+    BRLO ln_ones
+    SUBI R20, 10
+    INC R21
+    RJMP ln_tens
+ln_ones:
+    TST R24
+    BREQ ln_skip_h
+    MOV R16, R24
+    SUBI R16, -48
+    RCALL LCD_DATA
+ln_skip_h:
+    TST R21
+    BREQ ln_skip_t
+    MOV R16, R21
+    SUBI R16, -48
+    RCALL LCD_DATA
+    RJMP ln_print_ones
+ln_skip_t:
+    TST R24
+    BREQ ln_print_ones
+    LDI R16, '0'
+    RCALL LCD_DATA
+ln_print_ones:
+    MOV R16, R20
+    SUBI R16, -48
+    RCALL LCD_DATA
+ln_done:
+    POP R24
+    POP R21
+    POP R20
+    POP R16
+    RET
+
+LCD_UPDATE:
+    PUSH R16
+    PUSH ZL
+    PUSH ZH
+    TST R0
+    BRNE lu_done
+
+    RCALL LCD_CLEAR
+    LDI R16, 0x80
+    RCALL LCD_CMD
+    LDI ZL, lo8(str_lcd_hum)
+    LDI ZH, hi8(str_lcd_hum)
+    RCALL LCD_PRINT_STR
+    RCALL LCD_PRINT_NUM
+    LDI R16, '%'
+    RCALL LCD_DATA
+
+    LDI R16, 0xC0
+    RCALL LCD_CMD
+
+    CPI R17, THRESHOLD_DRY
+    BRSH lu_check_wet
+    LDI ZL, lo8(str_lcd_dry)
+    LDI ZH, hi8(str_lcd_dry)
+    RJMP lu_print
+
+lu_check_wet:
+    CPI R17, THRESHOLD_WET
+    BRLO lu_optimal
+    LDI ZL, lo8(str_lcd_wet)
+    LDI ZH, hi8(str_lcd_wet)
+    RJMP lu_print
+
+lu_optimal:
+    LDI ZL, lo8(str_lcd_optimal)
+    LDI ZH, hi8(str_lcd_optimal)
+
+lu_print:
+    RCALL LCD_PRINT_STR
+lu_done:
+    POP ZH
+    POP ZL
+    POP R16
+    RET
+
+delay_short:
+    PUSH R20
+    PUSH R21
+    LDI R20, 10
+ds_o: LDI R21, 200
+ds_i: DEC R21
+    BRNE ds_i
+    DEC R20
+    BRNE ds_o
+    POP R21
+    POP R20
+    RET
+
+delay_2ms:
+    PUSH R20
+    PUSH R21
+    LDI R20, 4
+d2_o: LDI R21, 250
+d2_i: DEC R21
+    BRNE d2_i
+    DEC R20
+    BRNE d2_o
+    POP R21
+    POP R20
+    RET
+
+delay_5ms:
+    PUSH R20
+    PUSH R21
+    LDI R20, 10
+d5_o: LDI R21, 250
+d5_i: DEC R21
+    BRNE d5_i
+    DEC R20
+    BRNE d5_o
+    POP R21
+    POP R20
+    RET
+
+delay_50ms:
+    PUSH R20
+    PUSH R21
+    PUSH R22
+    LDI R20, 50
+d50_o: LDI R21, 200
+d50_m: LDI R22, 200
+d50_i: DEC R22
+    BRNE d50_i
+    DEC R21
+    BRNE d50_m
+    DEC R20
+    BRNE d50_o
+    POP R22
+    POP R21
+    POP R20
     RET
 
 delay_20ms:
